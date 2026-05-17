@@ -2,7 +2,7 @@ import os
 import random
 from telegram.ext import Application, CommandHandler
 
-TOKEN = os.getenv("8696475636:AAFQkVbi3DyWFZGU0glDPPC04yUPaK6Oihk")
+TOKEN = os.getenv("TOKEN")
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
