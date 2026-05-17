@@ -1,18 +1,9 @@
 import os
 import random
-from telegram.ext import Application, CommandHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
-import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-
-TOKEN = "8696475636:AAFQkVbi3DyWFZGU0glDPPC04yUPaK6Oihk"
 
 players = {}
 roles = {}
@@ -21,14 +12,19 @@ votes = {}
 night_actions = {"kill": None, "heal": None, "check": None}
 group_chat_id = None
 game_started = False
+night_finished = False
 
 
 def alive_keyboard(action):
-    buttons = []
+    keyboard = []
     for user_id in alive:
-        name = players[user_id]["name"]
-        buttons.append([InlineKeyboardButton(name, callback_data=f"{action}:{user_id}")])
-    return InlineKeyboardMarkup(buttons)
+        keyboard.append([
+            InlineKeyboardButton(
+                players[user_id]["name"],
+                callback_data=f"{action}:{user_id}"
+            )
+        ])
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -39,7 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global players, roles, alive, votes, night_actions, group_chat_id, game_started
+    global players, roles, alive, votes, night_actions, group_chat_id, game_started, night_finished
 
     group_chat_id = update.effective_chat.id
     players = {}
@@ -48,6 +44,7 @@ async def game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     votes = {}
     night_actions = {"kill": None, "heal": None, "check": None}
     game_started = False
+    night_finished = False
 
     await update.message.reply_text(
         "🎮 Игра создана!\n"
@@ -71,6 +68,7 @@ async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "name": user.first_name,
         "username": user.username
     }
+
     alive.add(user.id)
 
     await update.message.reply_text(
@@ -88,27 +86,27 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     game_started = True
 
-    player_ids = list(players.keys())
-    random.shuffle(player_ids)
+    ids = list(players.keys())
+    random.shuffle(ids)
 
-    if len(player_ids) == 2:
+    if len(ids) == 2:
         role_list = ["мафия", "мирный"]
-    elif len(player_ids) == 3:
+    elif len(ids) == 3:
         role_list = ["мафия", "комиссар", "мирный"]
     else:
-        mafia_count = max(1, len(player_ids) // 4)
+        mafia_count = max(1, len(ids) // 4)
         role_list = (
             ["мафия"] * mafia_count
             + ["доктор"]
             + ["комиссар"]
-            + ["мирный"] * (len(player_ids) - mafia_count - 2)
+            + ["мирный"] * (len(ids) - mafia_count - 2)
         )
 
     random.shuffle(role_list)
 
     failed = []
 
-    for user_id, role in zip(player_ids, role_list):
+    for user_id, role in zip(ids, role_list):
         roles[user_id] = role
 
         try:
@@ -126,22 +124,21 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(
-        "✅ Игра началась!\n"
-        "Роли отправлены в личку."
-    )
-
+    await update.message.reply_text("✅ Игра началась! Роли отправлены в личку.")
     await night(update, context)
 
 
 async def night(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global night_finished
+
+    night_finished = False
     night_actions["kill"] = None
     night_actions["heal"] = None
     night_actions["check"] = None
 
     await context.bot.send_message(
         chat_id=group_chat_id,
-        text="🌙 Ночь началась.\nВсе роли делают выбор в личке."
+        text="🌙 Ночь началась.\nРоли делают выбор в личке."
     )
 
     for user_id in alive:
@@ -169,7 +166,9 @@ async def night(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def all_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global night_finished
+
     query = update.callback_query
     await query.answer()
 
@@ -197,6 +196,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔪 Ты выбрал: {players[target_id]['name']}"
         )
 
+        if not night_finished:
+            night_finished = True
+            await process_night(context)
+
     elif action == "heal":
         if role != "доктор":
             await query.edit_message_text("❌ Ты не доктор.")
@@ -212,27 +215,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ты не комиссар.")
             return
 
-        checked_role = roles[target_id]
         await query.edit_message_text(
-            f"🔍 {players[target_id]['name']} — {checked_role}"
+            f"🔍 {players[target_id]['name']} — {roles[target_id]}"
+        )
+
+    elif action == "vote":
+        votes[user_id] = target_id
+
+        await query.edit_message_text(
+            f"🗳 Ты проголосовал против {players[target_id]['name']}"
+        )
+
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text=f"🗳 {players[user_id]['name']} проголосовал."
         )
 
 
-async def nightresults(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_night(context: ContextTypes.DEFAULT_TYPE):
     kill_id = night_actions["kill"]
     heal_id = night_actions["heal"]
 
     if kill_id is None:
-        await update.message.reply_text("🌙 Ночью никто не погиб.")
-    elif kill_id == heal_id:
-        await update.message.reply_text("💊 Доктор спас жертву мафии!")
-    else:
-        alive.discard(kill_id)
-        await update.message.reply_text(
-            f"☠️ Ночью погиб: {players[kill_id]['name']}"
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text="🌙 Ночью никто не погиб."
         )
 
-    await check_win(update, context)
+    elif kill_id == heal_id:
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text="💊 Доктор спас жертву мафии!"
+        )
+
+    else:
+        alive.discard(kill_id)
+
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text=f"☠️ Ночью погиб: {players[kill_id]['name']}"
+        )
+
+    await check_win_by_context(context)
 
 
 async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,12 +266,10 @@ async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ты выбыл и не можешь голосовать.")
         return
 
-    keyboard = alive_keyboard("vote")
-    await update.message.reply_text("🗳 Выбери, против кого голосуешь:", reply_markup=keyboard)
-
-
-async def vote_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
+    await update.message.reply_text(
+        "🗳 Выбери, против кого голосуешь:",
+        reply_markup=alive_keyboard("vote")
+    )
 
 
 async def results(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,7 +310,37 @@ async def check_win(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "☀️ День начался!\n"
         "Обсуждайте и голосуйте командой /vote\n"
-        "После голосования напишите /results"
+        "После голосования напишите /results\n"
+        "Для следующей ночи — /night"
+    )
+
+
+async def check_win_by_context(context: ContextTypes.DEFAULT_TYPE):
+    mafia_alive = sum(1 for user_id in alive if roles.get(user_id) == "мафия")
+    peaceful_alive = sum(1 for user_id in alive if roles.get(user_id) != "мафия")
+
+    if mafia_alive == 0:
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text="🎉 Мирные победили!"
+        )
+        return
+
+    if mafia_alive >= peaceful_alive:
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text="💀 Мафия победила!"
+        )
+        return
+
+    await context.bot.send_message(
+        chat_id=group_chat_id,
+        text=(
+            "☀️ День начался!\n"
+            "Обсуждайте и голосуйте командой /vote\n"
+            "После голосования напишите /results\n"
+            "Для следующей ночи — /night"
+        )
     )
 
 
@@ -307,48 +359,16 @@ async def players_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global players, roles, alive, votes, game_started
+    global players, roles, alive, votes, game_started, night_finished
 
     players = {}
     roles = {}
     alive = set()
     votes = {}
     game_started = False
+    night_finished = False
 
     await update.message.reply_text("❌ Игра остановлена.")
-
-
-async def all_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    action, target = query.data.split(":")
-    target_id = int(target)
-    user_id = query.from_user.id
-
-    if action == "vote":
-        if user_id not in alive:
-            await query.edit_message_text("❌ Ты выбыл.")
-            return
-
-        if target_id not in alive:
-            await query.edit_message_text("❌ Этот игрок уже выбыл.")
-            return
-
-        votes[user_id] = target_id
-
-        await query.edit_message_text(
-            f"🗳 Ты проголосовал против {players[target_id]['name']}"
-        )
-
-        await context.bot.send_message(
-            chat_id=group_chat_id,
-            text=f"🗳 {players[user_id]['name']} проголосовал."
-        )
-
-        return
-
-    await button_handler(update, context)
 
 
 def main():
@@ -359,7 +379,6 @@ def main():
     app.add_handler(CommandHandler("join", join))
     app.add_handler(CommandHandler("startgame", startgame))
     app.add_handler(CommandHandler("night", night))
-    app.add_handler(CommandHandler("nightresults", nightresults))
     app.add_handler(CommandHandler("vote", vote))
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("players", players_list))
