@@ -3,7 +3,7 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = "8696475636:AAFQkVbi3DyWFZGU0glDPPC04yUPaK6Oihk"
 
 players = {}
 roles = {}
